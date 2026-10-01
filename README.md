@@ -1,2 +1,3 @@
-# GSB_rpg_battle_01
-Clone of RoiYehezkel/RPG-BATTLE
+## RPG BATTALE 
+
+### A python implementation of text based/terminal battle game
