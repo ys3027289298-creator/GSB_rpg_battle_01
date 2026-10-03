@@ -15,7 +15,7 @@ class bcolor:
 
 class Person:
 
-    def __init__(self, name, hp, mp, atk, df, magic, items):
+    def __init__(self, name, hp, mp, atk, df, magic, items, crit_chance=0.0, crit_multiplier=1.5):
         self.maxhp = hp
         self.hp = hp
         self.maxmp = mp
@@ -27,9 +27,12 @@ class Person:
         self.items = items
         self.action = ["Attack", "Magic", "Items"]
         self.name = name
+        self.crit_chance = crit_chance
+        self.crit_multiplier = crit_multiplier
+        self.cooldowns = {}
 
-    def generate_damage(self):
-        return random.randrange(self.atkl,self.atkh)
+    def generate_damage(self, rng=None):
+        return (rng or random).randrange(self.atkl, self.atkh)
 
 
     def take_damage(self, dmg):
@@ -56,7 +59,7 @@ class Person:
         return self.maxmp
 
     def reduce_mp(self, cost):
-        self.mp -= cost
+        self.mp = max(0, self.mp - cost)
 
     
     def choose_action(self):
@@ -83,14 +86,16 @@ class Person:
             i += 1
 
     def choose_target(self, enemies):
-        i = 1
         print("\n" + bcolor.FAIL + bcolor.BOLD + "    TARGET:" + bcolor.ENDC)
-        for enemy in enemies:
-            if enemy.get_hp() != 0:
-                print("        " + str(i) + ".", enemy.name)
-                i += 1
+        living = [enemy for enemy in enemies if enemy.get_hp() != 0]
+        if not living:
+            return -1
+        i = 1
+        for enemy in living:
+            print("        " + str(i) + ".", enemy.name)
+            i += 1
         choice = int(input("    Choose target:")) - 1
-        return choice
+        return enemies.index(living[choice])
             
 
     def get_enemy_status(self):
@@ -164,14 +169,100 @@ class Person:
 
 
     def choose_enemy_spell(self):
-        magic_choice = random.randrange(0, len(self.magic))
-        spell = self.magic[magic_choice] 
-        magic_dmg = spell.generate_damage()
         pct = self.hp / self.maxhp * 100
-        if self.mp < spell.cost or spell.type == "white" and pct > 50:
-            self.choose_enemy_spell()
+        for _ in range(len(self.magic)):
+            magic_choice = random.randrange(0, len(self.magic))
+            spell = self.magic[magic_choice]
+            if self.mp >= spell.cost and not (spell.type == "white" and pct > 50):
+                return spell, spell.generate_damage()
+        return None
+
+
+def _tick_cooldowns(person):
+    for name in list(person.cooldowns):
+        person.cooldowns[name] = max(0, person.cooldowns[name] - 1)
+
+
+def _resolve_hit(attacker, target, base_damage, rng):
+    damage = max(0, base_damage - target.df)
+    crit = rng.random() < attacker.crit_chance
+    if crit:
+        damage = int(round(damage * attacker.crit_multiplier))
+    hp_after = target.take_damage(damage)
+    return {
+        "target": target.name,
+        "damage": damage,
+        "crit": crit,
+        "killed": hp_after == 0,
+        "hp_after": hp_after,
+    }
+
+
+def resolve_turn(attacker, targets=None, spell=None, rng=None):
+    """Settle one combat turn and return a deterministic result dict.
+
+    Settlement order is fixed: target selection -> cooldown -> MP cost ->
+    damage formula -> defense -> critical hit -> HP clamp. Cooldowns tick
+    once per turn with living targets, after the action resolves. A turn
+    with no living targets is a pure no-op: no state changes, no rng use.
+    """
+    rng = rng or random
+    targets = targets or []
+    result = {
+        "ok": False,
+        "reason": "",
+        "action": "spell" if spell is not None else "attack",
+        "attacker": attacker.name,
+        "spell": spell.name if spell is not None else None,
+        "hits": [],
+        "heals": [],
+        "total_damage": 0,
+        "cooldowns": dict(attacker.cooldowns),
+    }
+
+    living = [target for target in targets if target.get_hp() > 0]
+    offensive = spell is None or spell.type != "white"
+    if offensive and not living:
+        result["reason"] = "no_targets"
+        return result
+
+    if spell is not None:
+        if attacker.cooldowns.get(spell.name, 0) > 0:
+            result["reason"] = "on_cooldown"
+            _tick_cooldowns(attacker)
+            result["cooldowns"] = dict(attacker.cooldowns)
+            return result
+        if spell.cost > attacker.get_mp():
+            result["reason"] = "not_enough_mp"
+            _tick_cooldowns(attacker)
+            result["cooldowns"] = dict(attacker.cooldowns)
+            return result
+        attacker.reduce_mp(spell.cost)
+        if spell.type == "white":
+            amount = spell.generate_damage(rng)
+            attacker.heal(amount)
+            result["heals"].append({
+                "target": attacker.name,
+                "amount": amount,
+                "hp_after": attacker.get_hp(),
+            })
         else:
-            return spell, magic_dmg
+            base_damage = spell.generate_damage(rng)
+            for target in living:
+                result["hits"].append(_resolve_hit(attacker, target, base_damage, rng))
+        _tick_cooldowns(attacker)
+        if spell.cooldown > 0:
+            attacker.cooldowns[spell.name] = spell.cooldown
+    else:
+        base_damage = attacker.generate_damage(rng)
+        for target in living:
+            result["hits"].append(_resolve_hit(attacker, target, base_damage, rng))
+        _tick_cooldowns(attacker)
+
+    result["total_damage"] = sum(hit["damage"] for hit in result["hits"])
+    result["ok"] = True
+    result["cooldowns"] = dict(attacker.cooldowns)
+    return result
            
 
 
@@ -179,6 +270,4 @@ class Person:
 
 
     
-
-
 
