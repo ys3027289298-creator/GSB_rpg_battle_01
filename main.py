@@ -1,4 +1,4 @@
-from classes.game import Person, bcolor
+from classes.game import Person, bcolor, resolve_turn, battle_status
 from classes.magic import Spell
 from classes.inventory import Item
 import random
@@ -56,20 +56,24 @@ while running:
         enemy.get_enemy_status()
 
     for player in players:
-            
+        if player.get_hp() == 0:
+            continue
+        if battle_status(players, enemies) != "ongoing":
+            break
+
         player.choose_action()
         choice = input("    Choose action: ")
         index = int(choice) - 1
         if index == 0:
-            dmg = player.generate_damage()
             enemy = player.choose_target(enemies)
-            enemies[enemy].take_damage(dmg)
-            print("You attacked " + enemies[enemy].name.replace(" ","") + " for", dmg, "points of damage.")
+            result = resolve_turn(player, enemies, enemy)
+            dmg = result["damage"]
+            print("You attacked " + enemies[result["target_index"]].name.replace(" ","") + " for", dmg, "points of damage.")
 
 
-            if enemies[enemy].get_hp() == 0:
-                print(enemies[enemy].name.replace(" ","") + " has died.")
-                del enemies[enemy]
+            if result["died"]:
+                print(enemies[result["target_index"]].name.replace(" ","") + " has died.")
+                del enemies[result["target_index"]]
         elif index == 1:
             player.choose_magic()
             magic_choice = int(input("    Choose magic: ")) - 1
@@ -81,19 +85,23 @@ while running:
             if spell.cost > current_mp:
                 print(bcolor.FAIL + "\nNot enough MP\n" + bcolor.ENDC)
                 continue
+            if player.on_cooldown(spell):
+                print(bcolor.FAIL + "\n" + spell.name + " is on cooldown\n" + bcolor.ENDC)
+                continue
             player.reduce_mp(spell.cost)
+            player.set_cooldown(spell)
             if spell.type == "white":
                 player.heal(magic_dmg)
                 print(bcolor.OKBLUE + "\n" + spell.name + " heals for", str(magic_dmg), "HP." + bcolor.ENDC)
             elif spell.type == "black":
 
                 enemy = player.choose_target(enemies)
-                enemies[enemy].take_damage(magic_dmg)
+                result = resolve_turn(player, enemies, enemy, damage=magic_dmg)
                
-                print(bcolor.OKBLUE + "\n" + spell.name + " deals", str(magic_dmg), "points of damage to " + enemies[enemy].name.replace(" ","") + bcolor.ENDC)
-                if enemies[enemy].get_hp() == 0:
-                    print(enemies[enemy].name.replace(" ","") + " has died.")
-                    del enemies[enemy]
+                print(bcolor.OKBLUE + "\n" + spell.name + " deals", str(result["damage"]), "points of damage to " + enemies[result["target_index"]].name.replace(" ","") + bcolor.ENDC)
+                if result["died"]:
+                    print(enemies[result["target_index"]].name.replace(" ","") + " has died.")
+                    del enemies[result["target_index"]]
         elif index == 2:
             player.choose_item()
             item_choice = int(input("    Choose item: ")) - 1
@@ -119,61 +127,71 @@ while running:
                 print(bcolor.OKGREEN + "\n" + item.name + " fully restores HP/MP" + bcolor.ENDC)
             elif item.type == "attack":
                 enemy = player.choose_target(enemies)
-                enemies[enemy].take_damage(item.prop)
-                print(bcolor.FAIL + "\n" + item.name + " deals", str(item.prop), "point of damage to " + enemies[enemy].name + bcolor.ENDC)
-                if enemies[enemy].get_hp() == 0:
-                    print(enemies[enemy].name.replace(" ","") + " has died.")
-                    del enemies[enemy]
-    # Check if batte is over
-    defeated_enemies = 0
-    defeated_players = 0
-
-    for enemy in enemies:
-        if enemy.get_hp() == 0:
-            defeated_enemies += 1
-    for player in players:
-        if player.get_hp() == 0:
-            defeated_players += 1
+                result = resolve_turn(player, enemies, enemy, damage=item.prop)
+                print(bcolor.FAIL + "\n" + item.name + " deals", str(result["damage"]), "point of damage to " + enemies[result["target_index"]].name + bcolor.ENDC)
+                if result["died"]:
+                    print(enemies[result["target_index"]].name.replace(" ","") + " has died.")
+                    del enemies[result["target_index"]]
+    # Check if battle is over
+    status = battle_status(players, enemies)
 
     # Check if Player won
-    if defeated_enemies == 2:
+    if status == "win":
         print(bcolor.OKGREEN + "You win!" + bcolor.ENDC)
         running = False
 
     # Check if Enemy won
-    elif defeated_players == 2:
+    elif status == "lose":
         print(bcolor.FAIL + "Your enemies have defeated you!" + bcolor.ENDC)
         running = False
+
+    if not running:
+        break
 
     print("\n")
     
     # Enemy attack phase
     for enemy in enemies:
+        if battle_status(players, enemies) != "ongoing":
+            break
         enemy_choice = random.randrange(0, 2)
-        if enemy_choice == 0:
+        spell = None
+        magic_dmg = 0
+        if enemy_choice == 1:
+            spell_result = enemy.choose_enemy_spell()
+            if spell_result is not None:
+                spell, magic_dmg = spell_result
+        if spell is None:
             # Choose attack
-            target = random.randrange(0, 3)
-            enemy_dmg = enemies[0].generate_damage()
-            players[target].take_damage(enemy_dmg)
-            print(enemy.name.replace(" ", "") + " attacks " + players[target].name.replace(" ", "")  + " for", enemy_dmg)
-        elif enemy_choice == 1:
-            spell, magic_dmg = enemy.choose_enemy_spell()
+            target = random.randrange(0, len(players))
+            result = resolve_turn(enemy, players, target)
+            print(enemy.name.replace(" ", "") + " attacks " + players[result["target_index"]].name.replace(" ", "")  + " for", result["damage"])
+        else:
             enemy.reduce_mp(spell.cost)
+            enemy.set_cooldown(spell)
             if spell.type == "white":
                 enemy.heal(magic_dmg)
                 print(bcolor.OKBLUE + spell.name + " heals " + enemy.name.replace(" ", "") + " for", str(magic_dmg), "HP." + bcolor.ENDC)
             elif spell.type == "black":
 
-                target = random.randrange(0, 3)
-                players[target].take_damage(magic_dmg)
+                target = random.randrange(0, len(players))
+                result = resolve_turn(enemy, players, target, damage=magic_dmg)
                
-                print(bcolor.OKBLUE + "\n" + enemy.name.replace(" ", "") + "'s " + spell.name + " deals", str(magic_dmg), "points of damage to " + players[target].name.replace(" ","") + bcolor.ENDC)
-                if players[target].get_hp() == 0:
-                    print(players[target].name.replace(" ","") + " has died.")
-                    del players[target]
+                print(bcolor.OKBLUE + "\n" + enemy.name.replace(" ", "") + "'s " + spell.name + " deals", str(result["damage"]), "points of damage to " + players[result["target_index"]].name.replace(" ","") + bcolor.ENDC)
+                if result["died"]:
+                    print(players[result["target_index"]].name.replace(" ","") + " has died.")
+                    del players[result["target_index"]]
 
             # print("Enemy choose", spell, "damage is", magic_dmg)
 
+    # Cooldowns tick down at the end of each round
+    for person in players + enemies:
+        person.tick_cooldowns()
+
+    # Check if the enemy phase ended the battle
+    if battle_status(players, enemies) == "lose":
+        print(bcolor.FAIL + "Your enemies have defeated you!" + bcolor.ENDC)
+        running = False
 
     
 
@@ -185,4 +203,3 @@ while running:
 
     
     
-

@@ -2,6 +2,67 @@ import random
 from .magic import Spell
 import pprint
 
+CRITICAL_CHANCE = 0.1
+CRITICAL_MULTIPLIER = 2
+
+
+def resolve_turn(attacker, targets, target_index=0, damage=None, critical=None, rng=None):
+    """Resolve a single attack against a list of targets.
+
+    Unified order of operations:
+      1. raw damage (given, or rolled from the attacker)
+      2. critical hit multiplier
+      3. flat defense subtraction
+      4. clamp damage at 0, then apply (HP clamps at 0)
+
+    Returns a plain dict; identical inputs always produce identical results.
+    An empty (or fully defeated) target list is a no-op that reports
+    battle_over instead of raising.
+    """
+    if rng is None:
+        rng = random
+    result = {
+        "attacker": attacker.name,
+        "target_index": None,
+        "target": None,
+        "damage": 0,
+        "critical": False,
+        "died": False,
+        "battle_over": True,
+    }
+    alive_indices = [i for i, target in enumerate(targets) if target.get_hp() > 0]
+    if not alive_indices:
+        return result
+    if target_index not in alive_indices:
+        target_index = alive_indices[0]
+    target = targets[target_index]
+    if damage is None:
+        damage = attacker.generate_damage()
+    if critical is None:
+        critical = rng.random() < CRITICAL_CHANCE
+    dealt = damage * (CRITICAL_MULTIPLIER if critical else 1) - target.df
+    dealt = max(0, dealt)
+    target.take_damage(dealt)
+    result.update({
+        "target_index": target_index,
+        "target": target.name,
+        "damage": dealt,
+        "critical": critical,
+        "died": target.get_hp() == 0,
+        "battle_over": all(t.get_hp() == 0 for t in targets),
+    })
+    return result
+
+
+def battle_status(players, enemies):
+    """Return "win", "lose" or "ongoing" for the current combatants."""
+    if not any(enemy.get_hp() > 0 for enemy in enemies):
+        return "win"
+    if not any(player.get_hp() > 0 for player in players):
+        return "lose"
+    return "ongoing"
+
+
 class bcolor:
     HEADER = '\033[95m'
     OKBLUE = '\033[94m'
@@ -27,6 +88,7 @@ class Person:
         self.items = items
         self.action = ["Attack", "Magic", "Items"]
         self.name = name
+        self.cooldowns = {}
 
     def generate_damage(self):
         return random.randrange(self.atkl,self.atkh)
@@ -57,6 +119,19 @@ class Person:
 
     def reduce_mp(self, cost):
         self.mp -= cost
+        if self.mp < 0:
+            self.mp = 0
+
+    def on_cooldown(self, spell):
+        return self.cooldowns.get(spell.name, 0) > 0
+
+    def set_cooldown(self, spell):
+        if spell.cooldown > 0:
+            self.cooldowns[spell.name] = spell.cooldown
+
+    def tick_cooldowns(self):
+        for name in list(self.cooldowns):
+            self.cooldowns[name] = max(0, self.cooldowns[name] - 1)
 
     
     def choose_action(self):
@@ -84,13 +159,17 @@ class Person:
 
     def choose_target(self, enemies):
         i = 1
+        valid = []
         print("\n" + bcolor.FAIL + bcolor.BOLD + "    TARGET:" + bcolor.ENDC)
-        for enemy in enemies:
+        for index, enemy in enumerate(enemies):
             if enemy.get_hp() != 0:
                 print("        " + str(i) + ".", enemy.name)
+                valid.append(index)
                 i += 1
         choice = int(input("    Choose target:")) - 1
-        return choice
+        if 0 <= choice < len(valid):
+            return valid[choice]
+        return valid[0] if valid else 0
             
 
     def get_enemy_status(self):
@@ -164,14 +243,16 @@ class Person:
 
 
     def choose_enemy_spell(self):
-        magic_choice = random.randrange(0, len(self.magic))
-        spell = self.magic[magic_choice] 
-        magic_dmg = spell.generate_damage()
         pct = self.hp / self.maxhp * 100
-        if self.mp < spell.cost or spell.type == "white" and pct > 50:
-            self.choose_enemy_spell()
-        else:
-            return spell, magic_dmg
+        for _ in range(len(self.magic) * 2):
+            magic_choice = random.randrange(0, len(self.magic))
+            spell = self.magic[magic_choice]
+            if self.mp < spell.cost or self.on_cooldown(spell):
+                continue
+            if spell.type == "white" and pct > 50:
+                continue
+            return spell, spell.generate_damage()
+        return None
            
 
 
@@ -179,6 +260,4 @@ class Person:
 
 
     
-
-
 
